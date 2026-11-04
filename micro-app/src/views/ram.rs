@@ -30,7 +30,7 @@ pub struct RamViewState {
 impl RamViewState {
     pub fn new() -> Self {
         Self {
-            goto_text: "000".to_string(),
+            goto_text: String::new(),
             ..Default::default()
         }
     }
@@ -72,6 +72,9 @@ pub fn show(
     view: &mut RamViewState,
 ) -> Option<Action> {
     let mut action = None;
+    // Клавиатурный ввод в ячейку подавляется в кадре, когда сработал переход:
+    // иначе Enter из поля адреса в том же кадре сдвинет свежее выделение.
+    let mut goto_used = false;
 
     // Панель действий (сверху)
     crate::widgets::toolbar(ui, |ui| {
@@ -117,32 +120,36 @@ pub fn show(
                     egui::TextEdit::singleline(&mut view.goto_text)
                         .font(egui::TextStyle::Monospace)
                         .desired_width(52.0)
-                        .hint_text("000"),
+                        .hint_text(egui::RichText::new("000").monospace().color(p.text_dim)),
                 );
                 if goto_resp.changed() {
-                    let sanitized: String = view
-                        .goto_text
-                        .chars()
-                        .filter(|c| c.is_ascii_hexdigit())
-                        .take(3)
-                        .collect();
-                    view.goto_text = sanitized;
+                    // HEX в любой раскладке: ф→A, и→B, …; всегда заглавные
+                    view.goto_text = crate::widgets::normalize_hex_string(&view.goto_text, 3);
                 }
                 let goto_address = u16::from_str_radix(&view.goto_text, 16).ok();
                 let goto_valid = goto_address.is_some_and(|a| (a as usize) < RAM_SIZE);
-                if ui
+                let goto_requested = ui
                     .add_enabled(goto_valid, egui::Button::new("Перейти"))
                     .on_hover_text(if goto_valid {
-                        "Прокрутить таблицу к указанному адресу"
+                        "Прокрутить таблицу к указанному адресу (Enter)"
                     } else {
                         "Введите адрес в диапазоне 000…3FF (HEX)"
                     })
-                    .clicked()
-                {
+                    .clicked();
+                // Enter в поле адреса — тоже переход
+                let goto_enter = goto_resp.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    && goto_valid;
+                if goto_requested || goto_enter {
                     if let Some(addr) = goto_address {
                         if (addr as usize) < RAM_SIZE {
-                            // Прокрутка к строке адреса (однократно, в этом кадре)
+                            // Прокрутка к строке адреса (однократно, в этом кадре)…
                             view.scroll_to = Some(addr as usize / 16);
+                            // …и сразу выбор ячейки: можно вводить значение с клавиатуры
+                            view.selected = Some(addr);
+                            view.ascii_selected = None;
+                            view.buf.clear();
+                            goto_used = true;
                         }
                     }
                 }
@@ -239,7 +246,9 @@ pub fn show(
         });
 
     // Клавиатурный ввод
-    handle_keyboard(ui, p, state, view);
+    if !goto_used {
+        handle_keyboard(ui, p, state, view);
+    }
 
     action
 }

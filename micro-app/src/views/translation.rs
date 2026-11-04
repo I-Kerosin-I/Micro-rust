@@ -103,11 +103,7 @@ pub fn show(
                             let was = view.focused[i * 2];
                             view.focused[i * 2] = resp.has_focus();
                             if resp.changed() {
-                                let s: String = view.addr_bufs[i]
-                                    .chars()
-                                    .filter(|c| c.is_ascii_hexdigit())
-                                    .take(2)
-                                    .collect();
+                                let s = crate::widgets::normalize_hex_string(&view.addr_bufs[i], 2);
                                 view.addr_bufs[i] = s.clone();
                                 if let Ok(v) = u16::from_str_radix(&s, 16) {
                                     state.table.rows[i].address = v as u8;
@@ -135,8 +131,7 @@ pub fn show(
                             if resp.changed() {
                                 let s: String = view.opcode_bufs[i]
                                     .chars()
-                                    .filter(|c| matches!(c, '0' | '1' | 'X' | 'x'))
-                                    .map(|c| c.to_ascii_uppercase())
+                                    .filter_map(crate::widgets::normalize_opcode_char)
                                     .take(16)
                                     .collect();
                                 view.opcode_bufs[i] = s.clone();

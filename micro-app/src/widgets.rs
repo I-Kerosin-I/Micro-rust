@@ -35,13 +35,9 @@ impl HexInput {
         self.focused = response.has_focus();
 
         if response.changed() {
-            // Фильтрация недопустимых символов и ограничение длины
-            let sanitized: String = self
-                .buffer
-                .chars()
-                .filter(|c| c.is_ascii_hexdigit())
-                .take(digits)
-                .collect();
+            // Нормализация: русская раскладка (ф→A, и→B, …), верхний регистр,
+            // фильтрация недопустимых символов и ограничение длины
+            let sanitized = normalize_hex_string(&self.buffer, digits);
             let differs = sanitized != self.buffer;
             if let Ok(v) = u16::from_str_radix(&sanitized, 16) {
                 on_change(v);
@@ -169,6 +165,40 @@ impl Toasts {
 pub fn dot(ui: &mut Ui, color: Color32, radius: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(radius * 2.0 + 2.0), Sense::hover());
     ui.painter().circle_filled(rect.center(), radius, color);
+}
+
+/// Нормализация символа в HEX-цифру с учётом русской раскладки.
+///
+/// Физические клавиши A–F в ЙЦУКЕН — это ф, и, с, в, у, а — транслируются
+/// в 'A'…'F'; латинские HEX-цифры приводятся к верхнему регистру.
+/// Возвращает `None` для символов, не являющихся HEX-цифрой.
+pub fn normalize_hex_char(c: char) -> Option<char> {
+    match c {
+        'ф' | 'Ф' => Some('A'),
+        'и' | 'И' => Some('B'),
+        'с' | 'С' => Some('C'),
+        'в' | 'В' => Some('D'),
+        'у' | 'У' => Some('E'),
+        'а' | 'А' => Some('F'),
+        _ => {
+            let upper = c.to_ascii_uppercase();
+            upper.is_ascii_hexdigit().then_some(upper)
+        }
+    }
+}
+
+/// Нормализация символа кода операции дешифратора: '0' | '1' | 'X'.
+/// Латинская X — на русской раскладке это клавиша «ч».
+pub fn normalize_opcode_char(c: char) -> Option<char> {
+    match c {
+        'ч' | 'Ч' | 'x' | 'X' => Some('X'),
+        _ => normalize_hex_char(c).filter(|h| *h == '0' || *h == '1'),
+    }
+}
+
+/// Нормализация строки HEX-цифр (см. [`normalize_hex_char`]).
+pub fn normalize_hex_string(s: &str, max_len: usize) -> String {
+    s.chars().filter_map(normalize_hex_char).take(max_len).collect()
 }
 
 /// Полоса инструментов: отступ слева и вертикальное центрирование содержимого.

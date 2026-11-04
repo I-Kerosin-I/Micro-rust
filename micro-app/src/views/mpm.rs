@@ -190,12 +190,7 @@ fn render_row(
                 }
                 if response.changed() {
                     let digits = if field == Field::Const { 4 } else { 1 };
-                    let sanitized: String = view
-                        .buf
-                        .chars()
-                        .filter(|c| c.is_ascii_hexdigit())
-                        .take(digits)
-                        .collect();
+                    let sanitized = crate::widgets::normalize_hex_string(&view.buf, digits);
                     if sanitized != view.buf {
                         view.buf = sanitized;
                     }
