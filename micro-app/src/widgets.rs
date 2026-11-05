@@ -201,6 +201,29 @@ pub fn normalize_hex_string(s: &str, max_len: usize) -> String {
     s.chars().filter_map(normalize_hex_char).take(max_len).collect()
 }
 
+/// HEX-цифра по коду клавиши (независимо от раскладки: цифры и A–F).
+pub fn hex_digit_from_key(key: egui::Key) -> Option<char> {
+    match key {
+        egui::Key::Num0 => Some('0'),
+        egui::Key::Num1 => Some('1'),
+        egui::Key::Num2 => Some('2'),
+        egui::Key::Num3 => Some('3'),
+        egui::Key::Num4 => Some('4'),
+        egui::Key::Num5 => Some('5'),
+        egui::Key::Num6 => Some('6'),
+        egui::Key::Num7 => Some('7'),
+        egui::Key::Num8 => Some('8'),
+        egui::Key::Num9 => Some('9'),
+        egui::Key::A => Some('A'),
+        egui::Key::B => Some('B'),
+        egui::Key::C => Some('C'),
+        egui::Key::D => Some('D'),
+        egui::Key::E => Some('E'),
+        egui::Key::F => Some('F'),
+        _ => None,
+    }
+}
+
 /// Полоса инструментов: отступ слева и вертикальное центрирование содержимого.
 pub fn toolbar(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     egui::Frame::new()

@@ -283,7 +283,12 @@ fn hex_cell(ui: &mut Ui, p: &Palette, state: &mut CpuState, view: &mut RamViewSt
     if is_selected || is_aram {
         painter.rect_stroke(rect, 3.0, Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
     }
-    let text = format!("{:0digits$X}", value, digits = digits);
+    // Неполный ввод: показываем накопленные цифры вместо старого значения
+    let text = if is_selected && !view.buf.is_empty() {
+        view.buf.clone()
+    } else {
+        format!("{:0digits$X}", value, digits = digits)
+    };
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
@@ -409,26 +414,8 @@ fn handle_keyboard(ui: &mut Ui, p: &Palette, state: &mut CpuState, view: &mut Ra
                 ..
             } = event
             {
-                // Цифры и A-F по коду клавиши
-                let digit = match key {
-                    egui::Key::Num0 => Some('0'),
-                    egui::Key::Num1 => Some('1'),
-                    egui::Key::Num2 => Some('2'),
-                    egui::Key::Num3 => Some('3'),
-                    egui::Key::Num4 => Some('4'),
-                    egui::Key::Num5 => Some('5'),
-                    egui::Key::Num6 => Some('6'),
-                    egui::Key::Num7 => Some('7'),
-                    egui::Key::Num8 => Some('8'),
-                    egui::Key::Num9 => Some('9'),
-                    egui::Key::A => Some('A'),
-                    egui::Key::B => Some('B'),
-                    egui::Key::C => Some('C'),
-                    egui::Key::D => Some('D'),
-                    egui::Key::E => Some('E'),
-                    egui::Key::F => Some('F'),
-                    _ => None,
-                };
+                // Цифры и A-F по коду клавиши — в любой раскладке
+                let digit = crate::widgets::hex_digit_from_key(*key);
                 if let Some(c) = digit {
                     if view.buf.len() < digits_max {
                         view.buf.push(c);
