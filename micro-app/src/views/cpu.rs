@@ -223,7 +223,7 @@ fn paint_overlays(ui: &mut egui::Ui, p: &Palette, state: &CpuState, rect: Rect) 
     };
 
     // Сетка РОНов 4×4 (как UniformGrid оригинала)
-    let grid = norm(170.0, 75.0, 389.0, 100.0);
+    let grid = norm(170.0, 75.0, 390.0, 99.9);
     let cell_w = grid.width() / 4.0;
     let cell_h = grid.height() / 4.0;
     let grid_regs: [[RegId; 4]; 4] = [
@@ -331,11 +331,11 @@ fn paint_overlays(ui: &mut egui::Ui, p: &Palette, state: &CpuState, rect: Rect) 
     }
 
     // Таблица флагов RFI/RFD — текст внутри рамки, предусмотренной на схеме
-    // (посадочное место измерено по PNG: канва (104.2, 412.3), размер 128.9×66.6).
-    let flags_r = norm(104.2, 412.3, 128.9, 66.6);
+    // (посадочное место измерено по PNG: канва (97.0, 412.3), размер 128.9×66.6).
+    let flags_r = norm(97.0, 412.3, 128.0, 66.6);
     let col_x = |frac: f32| flags_r.left() + flags_r.width() * frac;
     let headers = ["", "N", "Z", "V", "C", "P"];
-    let fracs = [0.16, 0.35, 0.52, 0.69, 0.86, 0.97];
+    let fracs = [0.17, 0.35, 0.5, 0.65, 0.8, 0.95];
     let header_font = FontId::proportional(10.0);
     let val_font = FontId::monospace(11.5);
     for (h, f) in headers.iter().zip(fracs.iter()) {
