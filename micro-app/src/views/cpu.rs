@@ -126,16 +126,22 @@ fn next_mk_panel(ui: &mut egui::Ui, p: &Palette, state: &CpuState, view: &mut Cp
                 .cell_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight))
                 .vscroll(false)
                 .min_scrolled_height(0.0);
+            // Колонок ровно 20: МК, Адрес, 17 полей, Комментарий —
+            // столько же, сколько ячеек пишет строка (метка + fmt_mk_row).
             table = table.column(egui_extras::Column::exact(74.0).resizable(false).clip(false));
+            table = table.column(egui_extras::Column::exact(34.0).resizable(false).clip(false));
             for (_, field) in MK_COLUMNS.iter() {
                 let w = if *field == Field::Const { 46.0 } else { 34.0 };
                 table = table.column(egui_extras::Column::exact(w).resizable(false).clip(false));
             }
-            table = table.column(egui_extras::Column::remainder().resizable(false).clip(false));
+            table = table.column(egui_extras::Column::remainder().resizable(false).clip(true).at_least(40.0));
             table
                 .header(20.0, |mut header| {
                     header.col(|ui| {
                         ui.label(RichText::new("МК").size(11.0).color(p.text_dim));
+                    });
+                    header.col(|ui| {
+                        ui.label(RichText::new("Адрес").size(11.0).color(p.text_dim));
                     });
                     for (name, _) in MK_COLUMNS.iter() {
                         header.col(|ui| {

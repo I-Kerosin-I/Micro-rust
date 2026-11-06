@@ -141,7 +141,7 @@ pub fn show(
                 let w = if *field == Field::Const { CONST_W } else { CELL_W };
                 table = table.column(egui_extras::Column::exact(w).resizable(false).clip(false));
             }
-            table = table.column(egui_extras::Column::remainder().resizable(false).clip(false));
+            table = table.column(egui_extras::Column::remainder().resizable(false).clip(true).at_least(60.0));
 
             if let Some(scroll_to) = view.scroll_to.take() {
                 table = table.scroll_to_row(scroll_to, Some(egui::Align::Center));

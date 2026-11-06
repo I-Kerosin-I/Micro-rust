@@ -65,7 +65,7 @@ pub fn show(
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
             table = table.column(egui_extras::Column::exact(40.0).resizable(false).clip(false));
             table = table.column(egui_extras::Column::exact(80.0).resizable(false).clip(false));
-            table = table.column(egui_extras::Column::remainder().resizable(false).clip(false));
+            table = table.column(egui_extras::Column::remainder().resizable(false).clip(true).at_least(180.0));
 
             table.header(20.0, |mut header| {
                 header.col(|ui| {
