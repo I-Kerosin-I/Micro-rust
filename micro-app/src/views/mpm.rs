@@ -5,7 +5,7 @@
 //! применением и переходом вниз. CONST и комментарии — текстовый ввод.
 
 use crate::theme::Palette;
-use egui::{Align2, Color32, CursorIcon, FontId, RichText, Sense, Stroke, TextEdit, Ui, Vec2};
+use egui::{Align2, Color32, CursorIcon, FontId, Rect, RichText, Sense, Stroke, TextEdit, Ui, Vec2, pos2};
 use micro_core::{field_options, CpuState, Field, MPM_SIZE};
 
 /// Ячейка прямого HEX-ввода: поле МК (CONST — отдельный текстовый режим).
@@ -75,6 +75,154 @@ const CONST_W: f32 = 46.0;
 const ADDR_W: f32 = 36.0;
 const ROW_H: f32 = 23.0;
 
+/// Ширина дорожки стрелки в гуттере, длина наконечника
+/// и отступ вертикальной линии от правой кромки (у адреса).
+const LANE_W: f32 = 7.0;
+const GUTTER_RIGHT_PAD: f32 = 11.0;
+const ARROW_LEN: f32 = 7.0;
+
+/// Вид стрелки перехода.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JumpKind {
+    /// Безусловный переход (CHA=0, либо CHA=1/3/4 при JFI.2=1).
+    Unconditional,
+    /// Условный переход (CHA=1/3/4, условие из CC/JFI).
+    Conditional,
+}
+
+/// Стрелка передачи управления в гуттере.
+#[derive(Debug, Clone, Copy)]
+struct JumpArrow {
+    from: usize,
+    to: usize,
+    kind: JumpKind,
+    lane: usize,
+}
+
+/// Расчёт стрелок: управление передаётся не через CHA=7 (CONT).
+fn compute_jumps(state: &CpuState) -> Vec<JumpArrow> {
+    let mut jumps: Vec<JumpArrow> = Vec::new();
+    for i in 0..MPM_SIZE {
+        let mk = state.mpm.get(i);
+        if mk.jfi == 5 {
+            continue; // останов: управления дальше нет
+        }
+        match mk.cha {
+            0 => {
+                // CMK <- 0: безусловный переход к выборке следующей команды
+                if i != 0 {
+                    jumps.push(JumpArrow {
+                        from: i,
+                        to: 0,
+                        kind: JumpKind::Unconditional,
+                        lane: 0,
+                    });
+                }
+            }
+            1 | 3 | 4 if mk.const_ < MPM_SIZE as u16 && mk.const_ as usize != i => {
+                // CJS/CJP/RPCT: переход на CONST (условный или безусловный при JFI.2)
+                let kind = if (mk.jfi & 4) == 0 {
+                    JumpKind::Conditional
+                } else {
+                    JumpKind::Unconditional
+                };
+                jumps.push(JumpArrow {
+                    from: i,
+                    to: mk.const_ as usize,
+                    kind,
+                    lane: 0,
+                });
+            }
+            _ => {}
+        }
+    }
+    assign_lanes(&mut jumps);
+    jumps
+}
+
+fn spans_overlap(a: &JumpArrow, b: &JumpArrow) -> bool {
+    let (a1, a2) = (a.from.min(a.to), a.from.max(a.to));
+    let (b1, b2) = (b.from.min(b.to), b.from.max(b.to));
+    a1 <= b2 && b1 <= a2
+}
+
+/// Раскладка стрелок по дорожкам, чтобы линии не накладывались
+/// (интервальная раскраска по перекрытию диапазонов «откуда…куда»).
+fn assign_lanes(jumps: &mut [JumpArrow]) {
+    let mut order: Vec<usize> = (0..jumps.len()).collect();
+    order.sort_by_key(|&i| (jumps[i].from.min(jumps[i].to), jumps[i].from));
+    let mut lanes: Vec<Option<usize>> = vec![None; jumps.len()];
+    for &i in &order {
+        let mut lane = 0usize;
+        loop {
+            let busy = jumps
+                .iter()
+                .enumerate()
+                .any(|(k, o)| lanes[k] == Some(lane) && spans_overlap(o, &jumps[i]));
+            if !busy || lane >= 7 {
+                break;
+            }
+            lane += 1;
+        }
+        lanes[i] = Some(lane);
+    }
+    for (j, lane) in jumps.iter_mut().zip(lanes) {
+        j.lane = lane.unwrap_or(0);
+    }
+}
+
+/// Отрисовка стрелок в гуттере (стиль дизассемблеров: вертикальные линии
+/// с отростками у источников и наконечниками на целевых строках).
+fn draw_jump_arrows(painter: &egui::Painter, jumps: &[JumpArrow], rects: &[Rect], p: &Palette) {
+    for j in jumps {
+        let (Some(src), Some(dst)) = (rects.get(j.from), rects.get(j.to)) else {
+            continue;
+        };
+        if !src.is_finite() || !dst.is_finite() {
+            continue;
+        }
+        // Выход — из нижней части строки-источника, вход — в верхнюю часть
+        // целевой строки: на строке с входящими и исходящими стрелками
+        // их точки крепления разнесены на 11 px по вертикали.
+        let sy = src.bottom() - 6.0;
+        let ty = dst.top() + 6.0;
+        let right = src.right();
+        let lx = right - GUTTER_RIGHT_PAD - j.lane as f32 * LANE_W;
+        let (stroke, dashed) = match j.kind {
+            JumpKind::Unconditional => (Stroke::new(1.5, p.accent), false),
+            JumpKind::Conditional => (Stroke::new(1.2, p.text_muted), true),
+        };
+        // Отросток от строки-источника к дорожке
+        painter.line_segment([pos2(right - 2.0, sy), pos2(lx, sy)], stroke);
+        // Вертикальная линия
+        if dashed {
+            painter.extend(egui::Shape::dashed_line(
+                &[pos2(lx, sy), pos2(lx, ty)],
+                stroke,
+                4.0,
+                3.0,
+            ));
+        } else {
+            painter.line_segment([pos2(lx, sy), pos2(lx, ty)], stroke);
+        }
+        // Линия к целевой строке и наконечник
+        painter.line_segment([pos2(lx, ty), pos2(right - ARROW_LEN, ty)], stroke);
+        let tri = vec![
+            pos2(right - ARROW_LEN, ty - 4.5),
+            pos2(right - ARROW_LEN, ty + 4.5),
+            pos2(right - 0.5, ty),
+        ];
+        painter.add(egui::Shape::convex_polygon(tri, stroke.color, Stroke::NONE));
+    }
+}
+
+/// Контекст гуттера: захват прямоугольников строк и области прокрутки.
+struct Gutter<'a> {
+    width: f32,
+    rects: &'a mut [Rect],
+    viewport_clip: &'a mut Option<Rect>,
+}
+
 /// Колонки таблицы: имя и поле.
 const FIELD_COLS: [(&str, Field); 17] = [
     ("A", Field::A),
@@ -126,22 +274,49 @@ pub fn show(
     );
     ui.add_space(2.0);
 
+    // Стрелки переходов (как в дизассемблерах): управление передаётся не через CHA=7
+    let jumps = compute_jumps(state);
+    let max_lane = jumps.iter().map(|j| j.lane).max().unwrap_or(0) as f32;
+    let gutter_w = if jumps.is_empty() {
+        12.0
+    } else {
+        (max_lane + 1.0) * LANE_W + GUTTER_RIGHT_PAD + 2.0
+    };
+
+    let mut row_rects: Vec<Rect> = vec![Rect::NOTHING; MPM_SIZE];
+    let mut viewport_clip: Option<Rect> = None;
+
     egui::Frame::new()
         .fill(p.panel_bg)
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
+            let mut gutter = Gutter {
+                width: gutter_w,
+                rects: &mut row_rects,
+                viewport_clip: &mut viewport_clip,
+            };
             let mut table = egui_extras::TableBuilder::new(ui)
                 .id_salt("mpm_table")
                 .striped(true)
                 .vscroll(true)
                 .min_scrolled_height(0.0);
             table = table.column(egui_extras::Column::exact(ADDR_W).resizable(false).clip(false));
+            table = table.column(
+                egui_extras::Column::exact(gutter.width)
+                    .resizable(false)
+                    .clip(false),
+            );
             for (name, field) in FIELD_COLS.iter() {
                 let _ = name;
                 let w = if *field == Field::Const { CONST_W } else { CELL_W };
                 table = table.column(egui_extras::Column::exact(w).resizable(false).clip(false));
             }
-            table = table.column(egui_extras::Column::remainder().resizable(false).clip(true).at_least(60.0));
+            table = table.column(
+                egui_extras::Column::remainder()
+                    .resizable(false)
+                    .clip(true)
+                    .at_least(60.0),
+            );
 
             if let Some(scroll_to) = view.scroll_to.take() {
                 table = table.scroll_to_row(scroll_to, Some(egui::Align::Center));
@@ -150,6 +325,9 @@ pub fn show(
             table.header(22.0, |mut header| {
                 header.col(|ui| {
                     ui.label(RichText::new("Адр.").size(11.0).color(p.text_dim));
+                });
+                header.col(|ui| {
+                    ui.label(RichText::new("→").size(11.0).color(p.text_dim));
                 });
                 for (name, _) in FIELD_COLS.iter() {
                     header.col(|ui| {
@@ -163,10 +341,39 @@ pub fn show(
             .body(|mut body| {
                 for row in 0..MPM_SIZE {
                     body.row(ROW_H, |mut row_ui| {
-                        render_row(p, state, view, row, &mut row_ui);
+                        render_row(p, state, view, &mut gutter, row, &mut row_ui);
                     });
                 }
             });
+
+            // Стрелки поверх таблицы (координаты строк захвачены при раскладке)
+            let mut min_y = f32::INFINITY;
+            let mut max_y = f32::NEG_INFINITY;
+            let mut any = false;
+            for j in &jumps {
+                for r in [j.from, j.to] {
+                    let rect = row_rects[r];
+                    if rect.is_finite() {
+                        min_y = min_y.min(rect.top());
+                        max_y = max_y.max(rect.bottom());
+                        any = true;
+                    }
+                }
+            }
+            if any {
+                let span_rect = Rect::from_min_max(
+                    pos2(row_rects[0].left() - 2.0, min_y - 2.0),
+                    pos2(row_rects[0].right() + 2.0, max_y + 2.0),
+                );
+                let paint_rect = match viewport_clip {
+                    Some(clip) => span_rect.intersect(clip),
+                    None => span_rect,
+                };
+                if paint_rect.is_positive() {
+                    let painter = ui.painter_at(paint_rect);
+                    draw_jump_arrows(&painter, &jumps, &row_rects, p);
+                }
+            }
         });
 
     // Прямой клавиатурный ввод в выбранную ячейку
@@ -379,6 +586,7 @@ fn render_row(
     p: &Palette,
     state: &mut CpuState,
     view: &mut MpmViewState,
+    gutter: &mut Gutter<'_>,
     row: usize,
     row_ui: &mut egui_extras::TableRow<'_, '_>,
 ) {
@@ -409,6 +617,16 @@ fn render_row(
                 ui.close();
             }
         });
+    });
+
+    // Гуттер стрелок переходов
+    row_ui.col(|ui| {
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(gutter.width, ROW_H - 3.0), Sense::hover());
+        gutter.rects[row] = rect;
+        if gutter.viewport_clip.is_none() {
+            *gutter.viewport_clip = Some(ui.clip_rect());
+        }
     });
 
     // Поля микрокоманды
