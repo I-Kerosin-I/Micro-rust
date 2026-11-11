@@ -5,7 +5,10 @@
 //! применением и переходом вниз. CONST и комментарии — текстовый ввод.
 
 use crate::theme::Palette;
-use egui::{Align2, Color32, CursorIcon, FontId, Rect, RichText, Sense, Stroke, TextEdit, Ui, Vec2, pos2};
+use egui::{
+    Align2, Color32, CursorIcon, FontId, Rect, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui,
+    Vec2, pos2,
+};
 use micro_core::{field_options, CpuState, Field, MPM_SIZE};
 
 /// Ячейка прямого HEX-ввода: поле МК (CONST — отдельный текстовый режим).
@@ -91,12 +94,38 @@ enum JumpKind {
 }
 
 /// Стрелка передачи управления в гуттере.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct JumpArrow {
     from: usize,
     to: usize,
     kind: JumpKind,
     lane: usize,
+    /// Условие перехода для подсказки (по полю CC с учётом JFI).
+    condition: String,
+}
+
+/// Имя условия перехода по полю CC (JP/JZ/JS/JO/JC/JL/JLE/JBE);
+/// при инверсии (JFI.0) после J добавляется N: JNP, JNZ и т.д.
+fn cc_condition_name(cc: u8, inverted: bool) -> &'static str {
+    match (cc, inverted) {
+        (0, false) => "JP",
+        (0, true) => "JNP",
+        (1, false) => "JZ",
+        (1, true) => "JNZ",
+        (2, false) => "JS",
+        (2, true) => "JNS",
+        (3, false) => "JO",
+        (3, true) => "JNO",
+        (4, false) => "JC",
+        (4, true) => "JNC",
+        (5, false) => "JL",
+        (5, true) => "JNL",
+        (6, false) => "JLE",
+        (6, true) => "JNLE",
+        (7, false) => "JBE",
+        (7, true) => "JNBE",
+        _ => "",
+    }
 }
 
 /// Расчёт стрелок: управление передаётся не через CHA=7 (CONT).
@@ -116,11 +145,25 @@ fn compute_jumps(state: &CpuState) -> Vec<JumpArrow> {
                         to: 0,
                         kind: JumpKind::Unconditional,
                         lane: 0,
+                        condition: "Безусловный".to_string(),
                     });
                 }
             }
-            1 | 3 | 4 if mk.const_ < MPM_SIZE as u16 && mk.const_ as usize != i => {
-                // CJS/CJP/RPCT: переход на CONST (условный или безусловный при JFI.2)
+            1 | 3 if mk.const_ < MPM_SIZE as u16 && mk.const_ as usize != i => {
+                // CJS/CJP: переход на CONST по условию из поля CC
+                // (безусловный при JFI.2; инверсия — JFI.0; источник признаков — JFI.1)
+                let condition = if (mk.jfi & 4) != 0 {
+                    "Безусловный".to_string()
+                } else {
+                    let mut c = cc_condition_name(mk.cc, (mk.jfi & 1) != 0).to_string();
+                    if mk.cha == 1 {
+                        c.push_str(" · вызов подпрограммы");
+                    }
+                    if (mk.jfi & 2) != 0 {
+                        c.push_str(" · признаки из RFD");
+                    }
+                    c
+                };
                 let kind = if (mk.jfi & 4) == 0 {
                     JumpKind::Conditional
                 } else {
@@ -131,6 +174,17 @@ fn compute_jumps(state: &CpuState) -> Vec<JumpArrow> {
                     to: mk.const_ as usize,
                     kind,
                     lane: 0,
+                    condition,
+                });
+            }
+            4 if mk.const_ < MPM_SIZE as u16 && mk.const_ as usize != i => {
+                // RPCT: цикл, пока RACT != 0 (поле CC не участвует)
+                jumps.push(JumpArrow {
+                    from: i,
+                    to: mk.const_ as usize,
+                    kind: JumpKind::Conditional,
+                    lane: 0,
+                    condition: "цикл, пока RACT ≠ 0".to_string(),
                 });
             }
             _ => {}
@@ -173,7 +227,26 @@ fn assign_lanes(jumps: &mut [JumpArrow]) {
 
 /// Отрисовка стрелок в гуттере (стиль дизассемблеров: вертикальные линии
 /// с отростками у источников и наконечниками на целевых строках).
-fn draw_jump_arrows(painter: &egui::Painter, jumps: &[JumpArrow], rects: &[Rect], p: &Palette) {
+/// Стрелка под курсором подсвечивается, остальные приглушаются.
+fn draw_jump_arrows(
+    ui: &egui::Ui,
+    paint_rect: Rect,
+    jumps: &[JumpArrow],
+    rects: &[Rect],
+    p: &Palette,
+) {
+    let hover_pos = ui.input(|i| i.pointer.hover_pos());
+    let painter = ui.painter_at(paint_rect);
+
+    struct Geom {
+        lx: f32,
+        sy: f32,
+        ty: f32,
+        right: f32,
+        hovered: bool,
+    }
+
+    let mut geoms: Vec<Geom> = Vec::with_capacity(jumps.len());
     for j in jumps {
         let (Some(src), Some(dst)) = (rects.get(j.from), rects.get(j.to)) else {
             continue;
@@ -188,31 +261,119 @@ fn draw_jump_arrows(painter: &egui::Painter, jumps: &[JumpArrow], rects: &[Rect]
         let ty = dst.top() + 6.0;
         let right = src.right();
         let lx = right - GUTTER_RIGHT_PAD - j.lane as f32 * LANE_W;
-        let (stroke, dashed) = match j.kind {
+        // Зоны ограничены гуттером: за его правой кромкой (в полях МК)
+        // стрелка не подсвечивается
+        let hovered = hover_pos.is_some_and(|h| {
+            let near_v = (h.x - lx).abs() <= 4.5
+                && h.y >= sy.min(ty) - 2.0
+                && h.y <= sy.max(ty) + 2.0;
+            let near_stub = h.y >= sy - 3.5
+                && h.y <= sy + 3.5
+                && h.x >= lx - 1.0
+                && h.x <= right;
+            let near_head = h.y >= ty - 5.0
+                && h.y <= ty + 5.0
+                && h.x >= lx - 1.0
+                && h.x <= right;
+            near_v || near_stub || near_head
+        });
+        geoms.push(Geom {
+            lx,
+            sy,
+            ty,
+            right,
+            hovered,
+        });
+    }
+
+    // Все стрелки под курсором (зоны соседних дорожек могут перекрываться)
+    let mut hovered: Vec<usize> = (0..geoms.len()).filter(|&i| geoms[i].hovered).collect();
+    let any_hovered = !hovered.is_empty();
+
+    for (g, j) in geoms.iter().zip(jumps.iter()) {
+        let (base, dashed) = match j.kind {
             JumpKind::Unconditional => (Stroke::new(1.5, p.accent), false),
             JumpKind::Conditional => (Stroke::new(1.2, p.text_muted), true),
         };
+        let stroke = if g.hovered {
+            Stroke::new(2.3, p.text)
+        } else if any_hovered {
+            Stroke::new(base.width, base.color.gamma_multiply(0.4))
+        } else {
+            base
+        };
+        let dashed = dashed && !g.hovered;
+
         // Отросток от строки-источника к дорожке
-        painter.line_segment([pos2(right - 2.0, sy), pos2(lx, sy)], stroke);
+        painter.line_segment([pos2(g.right - 2.0, g.sy), pos2(g.lx, g.sy)], stroke);
         // Вертикальная линия
         if dashed {
             painter.extend(egui::Shape::dashed_line(
-                &[pos2(lx, sy), pos2(lx, ty)],
+                &[pos2(g.lx, g.sy), pos2(g.lx, g.ty)],
                 stroke,
                 4.0,
                 3.0,
             ));
         } else {
-            painter.line_segment([pos2(lx, sy), pos2(lx, ty)], stroke);
+            painter.line_segment([pos2(g.lx, g.sy), pos2(g.lx, g.ty)], stroke);
         }
         // Линия к целевой строке и наконечник
-        painter.line_segment([pos2(lx, ty), pos2(right - ARROW_LEN, ty)], stroke);
+        painter.line_segment([pos2(g.lx, g.ty), pos2(g.right - ARROW_LEN, g.ty)], stroke);
         let tri = vec![
-            pos2(right - ARROW_LEN, ty - 4.5),
-            pos2(right - ARROW_LEN, ty + 4.5),
-            pos2(right - 0.5, ty),
+            pos2(g.right - ARROW_LEN, g.ty - 4.5),
+            pos2(g.right - ARROW_LEN, g.ty + 4.5),
+            pos2(g.right - 0.5, g.ty),
         ];
-        painter.add(egui::Shape::convex_polygon(tri, stroke.color, Stroke::NONE));
+        let fill = if g.hovered { p.text } else { stroke.color };
+        painter.add(egui::Shape::convex_polygon(tri, fill, Stroke::NONE));
+    }
+
+    // Курсор-рука и подсказка со списком всех переходов под курсором
+    if !hovered.is_empty() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        if let Some(h) = hover_pos {
+            hovered.sort_by_key(|&i| (jumps[i].from, jumps[i].to));
+            let tip_painter = ui.painter();
+            let mut galleys: Vec<std::sync::Arc<egui::Galley>> = Vec::new();
+            for &i in &hovered {
+                let j = &jumps[i];
+                let text = format!("МК {:02X} → МК {:02X} · {}", j.from, j.to, j.condition);
+                galleys.push(tip_painter.layout_no_wrap(
+                    text,
+                    FontId::proportional(12.5),
+                    p.text,
+                ));
+            }
+            let width = galleys
+                .iter()
+                .map(|g| g.size().x)
+                .fold(0.0f32, f32::max)
+                + 16.0;
+            let height: f32 =
+                galleys.iter().map(|g| g.size().y).sum::<f32>() + 10.0 + (galleys.len() - 1) as f32 * 3.0;
+            let frame = ui.clip_rect();
+            let pos = pos2(
+                (h.x + 14.0)
+                    .min(frame.right() - width - 4.0)
+                    .max(frame.left() + 2.0),
+                (h.y + 12.0)
+                    .min(frame.bottom() - height - 4.0)
+                    .max(frame.top() + 2.0),
+            );
+            let rect = Rect::from_min_size(pos, Vec2::new(width, height));
+            tip_painter.rect_filled(rect, 6.0, p.elevation_bg);
+            tip_painter.rect_stroke(
+                rect,
+                6.0,
+                Stroke::new(1.0, p.border_strong),
+                StrokeKind::Outside,
+            );
+            let mut y = rect.top() + 5.0;
+            for galley in &galleys {
+                tip_painter.galley(pos2(rect.left() + 8.0, y), galley.clone(), p.text);
+                y += galley.size().y + 3.0;
+            }
+        }
     }
 }
 
@@ -370,8 +531,7 @@ pub fn show(
                     None => span_rect,
                 };
                 if paint_rect.is_positive() {
-                    let painter = ui.painter_at(paint_rect);
-                    draw_jump_arrows(&painter, &jumps, &row_rects, p);
+                    draw_jump_arrows(ui, paint_rect, &jumps, &row_rects, p);
                 }
             }
         });
