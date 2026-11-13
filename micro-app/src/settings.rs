@@ -15,6 +15,8 @@ pub struct Settings {
     pub last_dir_csv: Option<PathBuf>,
     /// Скорость непрерывного исполнения, микрокоманд в секунду.
     pub run_speed: f64,
+    /// Семантический режим отображения микропрограммной памяти.
+    pub mpm_semantic: bool,
 }
 
 impl Default for Settings {
@@ -27,6 +29,7 @@ impl Default for Settings {
             last_dir_tta: None,
             last_dir_csv: None,
             run_speed: 1000.0,
+            mpm_semantic: false,
         }
     }
 }

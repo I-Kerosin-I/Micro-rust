@@ -9,7 +9,7 @@ use egui::{
     Align2, Color32, CursorIcon, FontId, Rect, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui,
     Vec2, pos2,
 };
-use micro_core::{field_options, CpuState, Field, MPM_SIZE};
+use micro_core::{field_options, CpuState, Field, MPM_SIZE, REGISTER_NAMES};
 
 /// Ячейка прямого HEX-ввода: поле МК (CONST — отдельный текстовый режим).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +37,8 @@ pub struct MpmViewState {
     scroll_to: Option<usize>,
     /// Запросить фокус у активного текстового поля.
     focus_pending: bool,
+    /// Семантический режим: смысл значений полей вместо HEX-цифр.
+    pub semantic: bool,
 }
 
 /// Поля прямого ввода (в порядке колонок, без CONST).
@@ -409,6 +411,8 @@ const FIELD_COLS: [(&str, Field); 17] = [
 pub enum Action {
     Load,
     Save,
+    /// Отвергнутый ввод: поле и недопустимый код (для подсказки).
+    InvalidInput { field: Field, value: u16 },
 }
 
 pub fn show(
@@ -427,6 +431,10 @@ pub fn show(
         if ui.button("Сохранить…").clicked() {
             action = Some(Action::Save);
         }
+        ui.separator();
+        ui.toggle_value(&mut view.semantic, "Семантика").on_hover_text(
+            "Смысл значений полей вместо HEX-цифр · наведение — полная подсказка, ПКМ — справочник",
+        );
     });
     crate::widgets::hint_line(
         ui,
@@ -456,6 +464,21 @@ pub fn show(
                 rects: &mut row_rects,
                 viewport_clip: &mut viewport_clip,
             };
+            // В семантическом режиме ширина колонки — по самой длинной метке
+            // поля (рассчитывается до создания таблицы, которая занимает ui)
+            let field_widths: Vec<f32> = FIELD_COLS
+                .iter()
+                .map(|(_, field)| {
+                    if *field == Field::Const {
+                        CONST_W
+                    } else if view.semantic {
+                        semantic_col_width(ui, *field)
+                    } else {
+                        CELL_W
+                    }
+                })
+                .collect();
+
             let mut table = egui_extras::TableBuilder::new(ui)
                 .id_salt("mpm_table")
                 .striped(true)
@@ -467,9 +490,7 @@ pub fn show(
                     .resizable(false)
                     .clip(false),
             );
-            for (name, field) in FIELD_COLS.iter() {
-                let _ = name;
-                let w = if *field == Field::Const { CONST_W } else { CELL_W };
+            for &w in &field_widths {
                 table = table.column(egui_extras::Column::exact(w).resizable(false).clip(false));
             }
             table = table.column(
@@ -502,7 +523,7 @@ pub fn show(
             .body(|mut body| {
                 for row in 0..MPM_SIZE {
                     body.row(ROW_H, |mut row_ui| {
-                        render_row(p, state, view, &mut gutter, row, &mut row_ui);
+                        render_row(p, state, view, &mut gutter, &field_widths, row, &mut row_ui);
                     });
                 }
             });
@@ -537,9 +558,160 @@ pub fn show(
         });
 
     // Прямой клавиатурный ввод в выбранную ячейку
-    handle_keyboard(ui, state, view);
+    if let Some((field, value)) = handle_keyboard(ui, state, view) {
+        action = action.or(Some(Action::InvalidInput { field, value }));
+    }
 
     action
+}
+
+/// Шрифт семантических меток (пропорциональный, мельче HEX-цифр).
+fn sem_font() -> FontId {
+    FontId::proportional(11.0)
+}
+
+/// Короткая семантическая метка значения поля для режима «Семантика»
+/// (сокращённые варианты подсказок из контекстного меню, чтобы строки
+/// не расходились вширь). `None` — семантики нет (N, CONST, недопустимые
+/// значения): показывается HEX-цифра, как в обычном режиме.
+fn field_label(field: Field, value: u16) -> Option<&'static str> {
+    match field {
+        Field::A | Field::B => REGISTER_NAMES.get(value as usize).copied(),
+        Field::Ma | Field::Mb => match value {
+            0 => Some("A/B"),
+            1 => Some("reg1"),
+            2 => Some("reg2"),
+            3 => Some("r/m"),
+            _ => None,
+        },
+        Field::Mem => match value {
+            0 => Some("нет"),
+            4 => Some("чт.б"),
+            5 => Some("чт.с"),
+            6 => Some("зп.б"),
+            7 => Some("зп.с"),
+            _ => None,
+        },
+        Field::Src => match value {
+            0 => Some("0,0"),
+            1 => Some("RGA,RGB"),
+            2 => Some("RGA,RGQ"),
+            3 => Some("RGA,RGR"),
+            4 => Some("RGA*2,RGB"),
+            5 => Some("CST,RGB"),
+            6 => Some("CST,RGR"),
+            7 => Some("CST,RGQ"),
+            _ => None,
+        },
+        Field::Sh => match value {
+            0 => Some("нет"),
+            1 => Some("SAR ALU"),
+            2 => Some("SHR ALU"),
+            3 => Some("SAR [ALU:RGQ]"),
+            4 => Some("SHR [ALU:RGQ]"),
+            5 => Some("SHR RGQ"),
+            6 => Some("MOV RGQ,ALU"),
+            8 => Some("SHL ALU"),
+            0xA => Some("SHL [ALU:RGQ]"),
+            0xE => Some("знак"),
+            _ => None,
+        },
+        Field::Alu => match value {
+            0 => Some("0"),
+            1 => Some("S-R-1+C0"),
+            2 => Some("R-S-1+C0"),
+            3 => Some("R+S+C0"),
+            4 => Some("S+C0"),
+            5 => Some("¬S+C0"),
+            6 => Some("R+C0"),
+            7 => Some("¬R+C0"),
+            8 => Some("S(умн.)"),
+            9 => Some("R&S"),
+            0xA => Some("R&¬S"),
+            0xB => Some("¬(R&S)"),
+            0xC => Some("R|S"),
+            0xD => Some("¬(R|S)"),
+            0xE => Some("R^S"),
+            0xF => Some("¬(R^S)"),
+            _ => None,
+        },
+        Field::Ccx => match value {
+            0 => Some("0"),
+            1 => Some("1"),
+            2 | 3 => Some("C"),
+            _ => None,
+        },
+        Field::F => match value {
+            0 => Some("нет"),
+            1 => Some("RFI→RFD"),
+            _ => None,
+        },
+        Field::Dst => match value {
+            0 => Some("нет"),
+            1 => Some("РЗУ=RGR"),
+            2 => Some("ст.←RGRмл"),
+            3 => Some("мл.←RGRст"),
+            4 => Some("РЗУ=SDA"),
+            _ => None,
+        },
+        Field::Wm => match value {
+            0 => Some("нет"),
+            1 => Some("RGW=SDA"),
+            2 => Some("ARAM=SDA"),
+            3 => Some("ARAM=RGB"),
+            _ => None,
+        },
+        Field::Jfi => match value {
+            0 => Some("RFI"),
+            1 => Some("¬RFI"),
+            2 => Some("RFD"),
+            3 => Some("¬RFD"),
+            4 => Some("безусл"),
+            5 => Some("стоп"),
+            _ => None,
+        },
+        Field::Cc => match value {
+            0 => Some("JP"),
+            1 => Some("JZ"),
+            2 => Some("JS"),
+            3 => Some("JO"),
+            4 => Some("JC"),
+            5 => Some("JL"),
+            6 => Some("JLE"),
+            7 => Some("JBE"),
+            _ => None,
+        },
+        Field::Cha => match value {
+            0 => Some("JZ"),
+            1 => Some("CJS"),
+            2 => Some("JMAP"),
+            3 => Some("CJP"),
+            4 => Some("RPCT"),
+            5 => Some("CRTN"),
+            6 => Some("LDCT"),
+            7 => Some("CONT"),
+            _ => None,
+        },
+        Field::N | Field::Const => None,
+    }
+}
+
+/// Ширина колонки поля в семантическом режиме — по самой длинной метке
+/// (колонка никогда не уже обычной, чтобы HEX-цифры без семантики
+/// отображались как прежде).
+fn semantic_col_width(ui: &Ui, field: Field) -> f32 {
+    let mut w = CELL_W;
+    for v in 0..16u16 {
+        if let Some(label) = field_label(field, v) {
+            let lw = ui
+                .painter()
+                .layout_no_wrap(label.to_owned(), sem_font(), Color32::WHITE)
+                .size()
+                .x;
+            w = w.max(lw + 10.0);
+        }
+    }
+    w
 }
 
 /// Ячейка прямого ввода: отображает буфер (или подсказку) и применяет цифры.
@@ -555,7 +727,16 @@ fn hex_cell(
     is_current_mk: bool,
 ) {
     let value = state.mpm.get(row).get(field);
-    let text = format!("{:01X}", value);
+    // Семантический режим: смысл значения вместо HEX-цифры (если он есть)
+    let label = if view.semantic {
+        field_label(field, value)
+    } else {
+        None
+    };
+    let text = match label {
+        Some(l) => l.to_owned(),
+        None => format!("{:01X}", value),
+    };
     let is_selected = view.selected == Some(SelectedCell { row, field });
 
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, ROW_H - 3.0), Sense::click());
@@ -590,7 +771,11 @@ fn hex_cell(
         rect.center(),
         Align2::CENTER_CENTER,
         display,
-        FontId::monospace(12.5),
+        if label.is_some() {
+            sem_font()
+        } else {
+            FontId::monospace(12.5)
+        },
         color,
     );
 
@@ -601,6 +786,21 @@ fn hex_cell(
         view.active_comment = None;
     }
     let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+
+    // Полная подсказка значения (как в справочнике ПКМ), HEX-цифра в начале —
+    // для сверки с цифровым режимом; только там, где показана метка
+    let resp = if label.is_some() {
+        match field_options(field)
+            .into_iter()
+            .find(|(v, _)| *v == value)
+            .map(|(_, d)| d)
+        {
+            Some(d) => resp.on_hover_text(format!("{:X} — {}", value, d)),
+            None => resp,
+        }
+    } else {
+        resp
+    };
 
     // Справочник значений (ПКМ)
     resp.context_menu(|ui| {
@@ -747,6 +947,7 @@ fn render_row(
     state: &mut CpuState,
     view: &mut MpmViewState,
     gutter: &mut Gutter<'_>,
+    field_widths: &[f32],
     row: usize,
     row_ui: &mut egui_extras::TableRow<'_, '_>,
 ) {
@@ -789,10 +990,8 @@ fn render_row(
         }
     });
 
-    // Поля микрокоманды
-    for (name, field) in FIELD_COLS.iter() {
-        let _ = name;
-        let w = if *field == Field::Const { CONST_W } else { CELL_W };
+    // Поля микрокоманды (ширина колонок рассчитана в show())
+    for ((_, field), &w) in FIELD_COLS.iter().zip(field_widths) {
         row_ui.col(|ui| {
             if *field == Field::Const {
                 const_cell(ui, p, state, view, row, w, is_current_mk);
@@ -811,13 +1010,16 @@ fn render_row(
 /// Прямой клавиатурный ввод в выбранную ячейку:
 /// HEX-цифра — немедленное применение и переход вниз,
 /// Enter/стрелки — навигация, Backspace — сброс, Esc — отмена.
-fn handle_keyboard(ui: &mut Ui, state: &mut CpuState, view: &mut MpmViewState) {
+/// Возвращает (поле, код) отвергнутого недопустимого значения.
+fn handle_keyboard(
+    ui: &mut Ui,
+    state: &mut CpuState,
+    view: &mut MpmViewState,
+) -> Option<(Field, u16)> {
     if ui.ctx().egui_wants_keyboard_input() {
-        return; // фокус в текстовом поле (CONST/комментарий/поле адреса)
+        return None; // фокус в текстовом поле (CONST/комментарий/поле адреса)
     }
-    let Some(cell) = view.selected else {
-        return;
-    };
+    let cell = view.selected?;
     let row = cell.row;
     let field = cell.field;
 
@@ -867,22 +1069,29 @@ fn handle_keyboard(ui: &mut Ui, state: &mut CpuState, view: &mut MpmViewState) {
     if deselect {
         view.selected = None;
         view.buf.clear();
-        return;
+        return None;
     }
 
     if let Some(d) = digit {
-        // Поле — одна цифра: немедленное применение и переход вниз
+        // Поле — одна цифра: немедленное применение и переход вниз.
+        // Недопустимый код поля отвергается: значение не меняется,
+        // выбор остаётся в ячейке, наверх уходит подсказка.
         view.buf.clear();
         view.buf.push(d);
-        if let Ok(v) = u16::from_str_radix(&view.buf, 16) {
-            state.mpm.get_mut(row).set(field, v);
-            state.mpm_modified = true;
-        }
+        let parsed = u16::from_str_radix(&view.buf, 16).ok();
         view.buf.clear();
-        new_sel = Some(SelectedCell {
-            row: row + 1,
-            field,
-        });
+        match parsed {
+            Some(v) if field.input_valid(v) => {
+                state.mpm.get_mut(row).set(field, v);
+                state.mpm_modified = true;
+                new_sel = Some(SelectedCell {
+                    row: row + 1,
+                    field,
+                });
+            }
+            Some(v) => return Some((field, v)),
+            None => {}
+        }
     }
 
     if let Some(next) = new_sel {
@@ -893,6 +1102,7 @@ fn handle_keyboard(ui: &mut Ui, state: &mut CpuState, view: &mut MpmViewState) {
         view.selected = Some(clamped);
         view.buf.clear();
     }
+    None
 }
 
 /// Отрисовка текстовой ячейки с фоном/рамкой; возвращает реакцию.
@@ -931,4 +1141,31 @@ fn text_cell(
         color,
     );
     resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Метки семантического режима согласованы со справочником ПКМ:
+    /// у каждого значения с меткой есть полное описание для подсказки.
+    #[test]
+    fn semantic_labels_have_context_menu_descriptions() {
+        for field in Field::ALL {
+            for value in 0..16u16 {
+                let Some(label) = field_label(field, value) else {
+                    continue;
+                };
+                assert!(!label.is_empty(), "{field:?} {value:X}: пустая метка");
+                let desc = field_options(field)
+                    .into_iter()
+                    .find(|(v, _)| *v == value)
+                    .map(|(_, d)| d);
+                assert!(
+                    desc.is_some_and(|d| !d.is_empty()),
+                    "{field:?} {value:X}: в справочнике ПКМ нет описания для метки «{label}»"
+                );
+            }
+        }
+    }
 }

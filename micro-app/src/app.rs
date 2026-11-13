@@ -97,6 +97,7 @@ impl MicroApp {
         theme::install_fonts(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx, app.settings.theme);
         app.applied_theme = Some(app.settings.theme);
+        app.mpm_view.semantic = app.settings.mpm_semantic;
         app
     }
 
@@ -711,11 +712,23 @@ impl MicroApp {
             Page::Mpm => {
                 let action =
                     crate::views::mpm::show(ui, &palette, &mut self.cpu, &mut self.mpm_view);
+                // Переключатели вида вкладки сохраняются сразу (как тема)
+                if self.mpm_view.semantic != self.settings.mpm_semantic {
+                    self.settings.mpm_semantic = self.mpm_view.semantic;
+                    self.settings.save();
+                }
                 match action {
                     Some(crate::views::mpm::Action::Load) => self.load_mpm(),
                     Some(crate::views::mpm::Action::Save) => {
                         self.save_mpm();
                     }
+                    Some(crate::views::mpm::Action::InvalidInput { field, value }) => self
+                        .toasts
+                        .error(format!(
+                            "Поле {}: недопустимое значение {:X} (справочник — ПКМ по ячейке)",
+                            field.name(),
+                            value
+                        )),
                     None => {}
                 }
             }

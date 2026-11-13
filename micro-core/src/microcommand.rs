@@ -76,6 +76,30 @@ impl Field {
             _ => 1,
         }
     }
+
+    /// Битовая маска поля: значение усекается до него при записи.
+    pub const fn mask(self) -> u16 {
+        match self {
+            Field::Const => 0xFFFF,
+            Field::A | Field::B | Field::N | Field::Alu | Field::Sh => 0x0F,
+            Field::Ma | Field::Mb | Field::Ccx | Field::Wm => 0x03,
+            Field::F => 0x01,
+            Field::Mem | Field::Src | Field::Dst | Field::Jfi | Field::Cc | Field::Cha => 0x07,
+        }
+    }
+
+    /// Валидация ввода: допустим ли код поля (по справочнику `field_options`).
+    /// Значение усекается до размера поля, как при записи; поля без
+    /// справочника (N, CONST) принимают любые значения.
+    pub fn input_valid(self, value: u16) -> bool {
+        if matches!(self, Field::N | Field::Const) {
+            return true;
+        }
+        let v = value & self.mask();
+        field_options(self)
+            .iter()
+            .any(|(allowed, _)| *allowed == v)
+    }
 }
 
 /// Микрокоманда.
@@ -161,25 +185,25 @@ impl MicroCommand {
     /// Запись поля по идентификатору. Значение усекается до размера поля
     /// (байтовые поля — 0..15 в HEX-представлении файла, CONST — 0..FFFF).
     pub fn set(&mut self, field: Field, value: u16) {
-        let v = value as u8;
+        let v = value & field.mask();
         match field {
-            Field::A => self.a = v & 0x0F,
-            Field::B => self.b = v & 0x0F,
-            Field::Ma => self.ma = v & 0x03,
-            Field::Mb => self.mb = v & 0x03,
-            Field::Mem => self.mem = v & 0x07,
-            Field::Src => self.src = v & 0x07,
-            Field::Sh => self.sh = v & 0x0F,
-            Field::N => self.n = v & 0x0F,
-            Field::Alu => self.alu = v & 0x0F,
-            Field::Ccx => self.ccx = v & 0x03,
-            Field::F => self.f = v & 0x01,
-            Field::Dst => self.dst = v & 0x07,
-            Field::Wm => self.wm = v & 0x03,
-            Field::Jfi => self.jfi = v & 0x07,
-            Field::Cc => self.cc = v & 0x07,
-            Field::Cha => self.cha = v & 0x07,
-            Field::Const => self.const_ = value,
+            Field::A => self.a = v as u8,
+            Field::B => self.b = v as u8,
+            Field::Ma => self.ma = v as u8,
+            Field::Mb => self.mb = v as u8,
+            Field::Mem => self.mem = v as u8,
+            Field::Src => self.src = v as u8,
+            Field::Sh => self.sh = v as u8,
+            Field::N => self.n = v as u8,
+            Field::Alu => self.alu = v as u8,
+            Field::Ccx => self.ccx = v as u8,
+            Field::F => self.f = v as u8,
+            Field::Dst => self.dst = v as u8,
+            Field::Wm => self.wm = v as u8,
+            Field::Jfi => self.jfi = v as u8,
+            Field::Cc => self.cc = v as u8,
+            Field::Cha => self.cha = v as u8,
+            Field::Const => self.const_ = v,
         }
     }
 }
@@ -298,3 +322,47 @@ pub fn field_options(field: Field) -> Vec<(u16, String)> {
 pub const REGISTER_NAMES: [&str; 16] = [
     "AX", "CX", "DX", "BX", "SP", "BP", "SI", "DI", "CS", "SS", "DS", "ES", "IP", "PSW", "RGK", "RW",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Валидация ввода согласована со справочником: допустимы ровно те
+    /// коды (после усечения), которые есть в field_options; поля без
+    /// справочника (N, CONST) принимают любые значения.
+    #[test]
+    fn input_valid_matches_field_options() {
+        for field in Field::ALL {
+            for value in 0..32u16 {
+                let truncated = value & field.mask();
+                let in_options = field_options(field)
+                    .iter()
+                    .any(|(allowed, _)| *allowed == truncated);
+                let expected =
+                    matches!(field, Field::N | Field::Const) || in_options;
+                assert_eq!(
+                    field.input_valid(value),
+                    expected,
+                    "{field:?}: значение {value:X}"
+                );
+            }
+        }
+    }
+
+    /// Отвергаемые коды из задачи: SH — 7, 9, B, C, D, F; MEM — 1, 2, 3.
+    #[test]
+    fn rejects_known_invalid_codes() {
+        for v in [0x7, 0x9, 0xB, 0xC, 0xD, 0xF] {
+            assert!(!Field::Sh.input_valid(v), "SH {v:X} должен отвергаться");
+        }
+        for v in [0x1, 0x2, 0x3] {
+            assert!(!Field::Mem.input_valid(v), "MEM {v:X} должен отвергаться");
+        }
+        for v in [0x5, 0x6, 0x7] {
+            assert!(!Field::Dst.input_valid(v), "DST {v:X} должен отвергаться");
+        }
+        for v in [0x6, 0x7] {
+            assert!(!Field::Jfi.input_valid(v), "JFI {v:X} должен отвергаться");
+        }
+    }
+}
